@@ -22,30 +22,37 @@
 
 module AXI_DMA(
 AXI4_FULL.MASTER axi_full,                                  //MM
-// AXI4_LITE.SLAVE s_axilite,                              //LITE
+AXI4_LITE.SLAVE s_axilite,                              //LITE
 AXIS.MASTER m_axis,                                     //STREAM
 AXIS.SLAVE s_axis                                       //STREAM
     );
 parameter DEPTH = 1024;
 //DMA<--->MM,读
-logic [31:0] rd_base_addr;                       //读起始地址
-logic [31:0] rd_total_len;                       //需要传输的字的个数,字为单位,可大于256
+logic [31:0] rd_base_addr;
+logic [31:0] rd_base_addr_r;                       //读起始地址
+logic [31:0] rd_total_len;
+logic [31:0] rd_total_len_r;                       //需要传输的字的个数,字为单位,可大于256
 logic [31:0] rd_len;                             //当前突发传输长度
 logic [31:0] rd_cnt;                             //一次传输内的计数
 logic rd_continue;                               //是否继续突发读
 logic [31:0] rd_transfer_num;                    //共需要多少次突发传输
 logic [31:0] rd_transfer_cnt;                    //当前完成的突发读的次数
 //DMA<--->,写
-logic [31:0] wr_base_addr;                       //写起始地址
-logic [31:0] wr_total_len;                       //需要传输的总次数，可以大于256
+logic [31:0] wr_base_addr;
+logic [31:0] wr_base_addr_r;                       //写起始地址
+logic [31:0] wr_total_len;
+logic [31:0] wr_total_len_r;                       //需要传输的总次数，可以大于256
 logic [31:0] wr_len;                             //当前突发传输长度
 logic [31:0] wr_cnt;                             //一次传输内的计数
 logic wr_continue;                               //是否继续发起突发写
 logic [31:0] wr_transfer_num;                    //共需要多少次突发传输
 logic [31:0] wr_transfer_cnt;                    //当前完成的传输事务次数
 logic start;
+logic [31:0] start_r;
+logic [31:0] start_r_ff;
 logic writeback;                                 //写回数据标志
 logic done;
+logic [31:0] done_r;
 //DMA<--->STREAM,发送数据
 logic [31:0] send_cnt;
 //DMA<--->STREAM,接受数据
@@ -56,20 +63,20 @@ logic [31:0] rx_buffer [0:DEPTH-1];
 logic [31:0] tx_buffer_cnt;                   //记录tx_buffer内数据个数
 logic [31:0] rx_buffer_cnt;                   //记录rx_buffer内数据个数
 //
-initial begin
-    rd_base_addr=0;
-    wr_base_addr=512;
-    rd_total_len=255;
-    wr_total_len=255;
-end
+// initial begin
+//     rd_base_addr=0;
+//     wr_base_addr=512;
+//     rd_total_len=255;
+//     wr_total_len=255;
+// end
 
-initial begin
-    start=0;
-    #100
-    start=1;
-    #10
-    start=0;
-end
+// initial begin
+//     start=0;
+//     #100
+//     start=1;
+//     #10
+//     start=0;
+// end
 
 //writeback
 always_ff@(posedge s_axis.ACLK,negedge s_axis.ARESETn)
@@ -356,7 +363,7 @@ if(m_axis.TLAST)
     send_cnt<=0;
 else
     send_cnt<=send_cnt+1;
-//AXIS SLAVE,DMA接收来自设备的数据
+//*******************************************************AXIS SLAVE,DMA接收来自设备的数据*******************************************************
 //TREADY
 always_ff@(posedge s_axis.ACLK,negedge s_axis.ARESETn)
 if(~s_axis.ARESETn)
@@ -377,4 +384,111 @@ else if(start)
     recv_cnt<=0;
 else if(s_axis.TVALID&&s_axis.TREADY)
     recv_cnt<=recv_cnt+1;
+//***********************************************************AXI LITE,配置寄存器*************************************************************
+//写寄存器
+/*
+rd_base_addr         0
+rd_total_len         4
+wr_base_addr         8
+wr_total_len         12
+start                16
+done                 20
+*/
+//写地址通道
+//AWREADY
+always_ff@(posedge s_axilite.ACLK,negedge s_axilite.ARESETn)
+if(~s_axilite.ARESETn)
+    s_axilite.AWREADY<=0;
+else if(s_axilite.AWVALID&&s_axilite.WVALID&&~s_axilite.AWREADY)
+    s_axilite.AWREADY<=1;
+else if(s_axilite.AWVALID&&s_axilite.AWREADY)
+    s_axilite.AWREADY<=0;
+//************************************************写数据通道************************************************
+//WREADY
+always_ff@(posedge s_axilite.ACLK,negedge s_axilite.ARESETn)
+if(~s_axilite.ARESETn)
+    s_axilite.WREADY<=0;
+else if(s_axilite.AWVALID&&s_axilite.WVALID&&~s_axilite.WREADY)
+    s_axilite.WREADY<=1;
+else if(s_axilite.WVALID&&s_axilite.WREADY)
+    s_axilite.WREADY<=0;
+//将数据写入寄存器
+always_ff@(posedge s_axilite.ACLK)
+if(s_axilite.WVALID&&s_axilite.AWVALID&&s_axilite.AWREADY&&s_axilite.WREADY)
+begin
+    case(s_axilite.AWADDR[4:2])
+        3'd0:rd_base_addr_r<=s_axilite.WDATA;
+        3'd1:rd_total_len_r<=s_axilite.WDATA;
+        3'd2:wr_base_addr_r<=s_axilite.WDATA;
+        3'd3:wr_total_len_r<=s_axilite.WDATA;
+        3'd4:start_r<=s_axilite.WDATA;
+        3'd5:done_r<=s_axilite.WDATA;
+        default:;
+    endcase
+end
+//**************************************************写响应通道********************************************
+//BVALID
+always_ff@(posedge s_axilite.ACLK,negedge s_axilite.ARESETn)
+if(~s_axilite.ARESETn)
+    s_axilite.BVALID<=0;
+else if(s_axilite.WVALID&&s_axilite.WREADY)
+    s_axilite.BVALID<=1;
+else if(s_axilite.BVALID&&s_axilite.BREADY)
+    s_axilite.BVALID<=0;
+//BRESP
+assign s_axilite.BRESP=2'b00;
+//***********************************************AXI LITE读地址通道***************************************
+//ARREADY
+always_ff@(posedge s_axilite.ACLK,negedge s_axilite.ARESETn)
+if(~s_axilite.ARESETn)
+    s_axilite.ARREADY<=0;
+else if(s_axilite.ARVALID&&~s_axilite.ARREADY)
+    s_axilite.ARREADY<=1;
+else if(s_axilite.ARREADY&&s_axilite.ARVALID)
+    s_axilite.ARREADY<=0;
+//****************************************************读数据通道***********************************************
+//RVALID
+always_ff@(posedge s_axilite.ACLK,s_axilite.ARESETn)
+if(~s_axilite.ARESETn)
+    s_axilite.RVALID<=0;
+else if(s_axilite.ARVALID&&s_axilite.ARREADY)
+    s_axilite.RVALID<=1;
+else if(s_axilite.RVALID&&s_axilite.RREADY)
+    s_axilite.RVALID<=0;
+//RDATA
+always_ff@(posedge s_axilite.ACLK)
+if(s_axilite.ARVALID&&s_axilite.ARREADY)
+begin
+    case(s_axilite.ARADDR[4:2])
+        3'd0:s_axilite.RDATA<=rd_base_addr_r;
+        3'd1:s_axilite.RDATA<=rd_total_len_r;
+        3'd2:s_axilite.RDATA<=wr_base_addr_r;
+        3'd3:s_axilite.RDATA<=wr_total_len_r;
+        3'd4:s_axilite.RDATA<=start_r;
+        3'd5:s_axilite.RDATA<=done_r;
+        default:;
+    endcase
+end
+//RRESP
+assign RRESP=2'b00;
+//start_r_ff
+always_ff@(posedge s_axilite.ACLK)
+    start_r_ff<=start_r;
+//start
+assign start=start_r[0]&&(~start_r_ff[0]);
+//done
+assign done=(rx_buffer_cnt==wr_total_len)?1:0;
+//
+assign rd_base_addr=rd_base_addr_r;
+assign rd_total_len=rd_total_len_r;
+assign wr_base_addr=wr_base_addr_r;
+assign wr_total_len=wr_total_len_r;
+//done_r
+always_ff@(posedge s_axilite.ACLK,negedge s_axilite.ARESETn)
+if(~s_axilite.ARESETn)
+    done_r<=32'd0;
+else if(start)
+    done_r<=32'd0;
+else if(done)
+    done_r<=32'd1;
 endmodule
